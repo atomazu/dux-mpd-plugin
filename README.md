@@ -17,12 +17,12 @@ Version 0.2.0. A composite QML plugin with one shared backend, a horizontal/vert
 - Native Dux Material widgets (`DButton`, `DIconButton`, `DSlider`) with ripple effects, focus rings, tooltips, and grouped cards.
 
 ## Screenshots
-<img width="750" height="710" alt="screenshot_2026-11-03_00-01-28" src="https://github.com/user-attachments/assets/f72b77b1-2a01-46f1-91fa-170adcb20b0c" />
-<img width="750" height="710" alt="screenshot_2026-11-03_00-01-59" src="https://github.com/user-attachments/assets/2567a1f8-bff7-432e-9c02-a9b1f23947b0" />
-<img width="750" height="710" alt="screenshot_2026-11-03_00-02-27" src="https://github.com/user-attachments/assets/1b2c5a76-a887-472e-9a5e-73bcc16167a8" />
-<img width="750" height="640" alt="screenshot_2026-11-03_00-03-05" src="https://github.com/user-attachments/assets/2ec08e73-fb62-4608-b68f-1117179b9532" />
-<img width="53" height="359" alt="screenshot_2026-11-03_00-03-36" src="https://github.com/user-attachments/assets/0bd67e66-fe4c-4f15-ad27-5d9b512b0d96" />
 
+| Main View | Queue |
+| :---: | :---: |
+| <img width="380" alt="Main playback view" src="https://github.com/user-attachments/assets/f72b77b1-2a01-46f1-91fa-170adcb20b0c" /> | <img width="380" alt="Queue view" src="https://github.com/user-attachments/assets/2567a1f8-bff7-432e-9c02-a9b1f23947b0" /> |
+| **Library and Search** | **In Control Panel** |
+| <img width="380" alt="Playback modes" src="https://github.com/user-attachments/assets/1b2c5a76-a887-472e-9a5e-73bcc16167a8" /> | <img width="380" alt="Error state" src="https://github.com/user-attachments/assets/2ec08e73-fb62-4608-b68f-1117179b9532" /> |
 
 ## Requirements
 
