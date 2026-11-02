@@ -19,8 +19,10 @@ PluginComponent {
             elapsed: 0,
             syncedAt: 0,
             duration: 0,
+            playlistVersion: 0,
             playlistLength: 0,
             songPosition: 0,
+            songId: -1,
             bitrate: null,
             audio: "",
             playbackError: "",
@@ -46,8 +48,10 @@ PluginComponent {
             single: s.single || "off",
             consume: s.consume || "off",
             duration: Math.round((s.duration || 0) * 10),
+            playlistVersion: s.playlistVersion || 0,
             playlistLength: s.playlistLength || 0,
             songPosition: s.songPosition || 0,
+            songId: s.songId !== undefined ? s.songId : -1,
             bitrate: s.bitrate || null,
             audio: s.audio || "",
             playbackError: s.playbackError || "",
@@ -79,6 +83,27 @@ PluginComponent {
                 {
                     action: "snapshot",
                     target: ""
+                }
+            ]);
+            next();
+            return;
+        }
+        if (action === "queue") {
+            const existingQueueIdx = pending.findIndex(item => item.action === "queue");
+            if (existingQueueIdx >= 0) {
+                const copy = pending.slice();
+                copy[existingQueueIdx] = {
+                    action: "queue",
+                    target: cleanTarget
+                };
+                pending = copy;
+                next();
+                return;
+            }
+            pending = pending.concat([
+                {
+                    action: "queue",
+                    target: cleanTarget
                 }
             ]);
             next();
@@ -151,8 +176,10 @@ PluginComponent {
                     elapsed: snapshot.elapsed || 0,
                     syncedAt: snapshot.syncedAt || 0,
                     duration: snapshot.duration || 0,
+                    playlistVersion: snapshot.playlistVersion || 0,
                     playlistLength: snapshot.playlistLength || 0,
                     songPosition: snapshot.songPosition || 0,
+                    songId: snapshot.songId !== undefined ? snapshot.songId : -1,
                     bitrate: snapshot.bitrate || null,
                     audio: snapshot.audio || "",
                     playbackError: snapshot.playbackError || "",
@@ -160,6 +187,14 @@ PluginComponent {
                     artUrl: snapshot.artUrl || "",
                     updated: snapshot.updated
                 };
+                publishState(false);
+            }
+        } else if (active.action === "queue") {
+            if (result.ok) {
+                result.nonce = Date.now() + Math.random();
+                PluginService.setGlobalVar("mpdControl", "queue", result);
+            } else {
+                actionError = result.error || "Failed to load queue.";
                 publishState(false);
             }
         } else {
@@ -235,8 +270,10 @@ PluginComponent {
         elapsed: 0,
         syncedAt: 0,
         duration: 0,
+        playlistVersion: 0,
         playlistLength: 0,
         songPosition: 0,
+        songId: -1,
         bitrate: null,
         audio: "",
         playbackError: "",

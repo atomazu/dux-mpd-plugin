@@ -57,7 +57,9 @@ class MockMPDHandler(socketserver.StreamRequestHandler):
                     f'single: {self.single}',
                     f'consume: {self.consume}',
                     f'state: {self.state}',
+                    'playlist: 14',
                     'song: 2',
+                    'songid: 102',
                     'playlistlength: 8',
                     'elapsed: 42.5',
                     'duration: 180.0',
@@ -73,7 +75,36 @@ class MockMPDHandler(socketserver.StreamRequestHandler):
                     'Artist: John Coltrane',
                     'Album: Blue Train',
                     'Date: 1957',
-                    'Id: 15',
+                    'Id: 102',
+                    'OK\n'
+                ]
+                self.wfile.write('\n'.join(lines).encode('utf-8'))
+            elif cmd.startswith('playlistinfo'):
+                parts = cmd.split(' ', 1)
+                start, end = 0, 8
+                if len(parts) > 1 and ':' in parts[1]:
+                    s_str, e_str = parts[1].split(':', 1)
+                    start, end = int(s_str), int(e_str)
+                out = []
+                for pos in range(start, min(8, end)):
+                    out.extend([
+                        f'file: Track_{pos}.flac',
+                        f'Title: Song {pos}',
+                        f'Artist: Artist {pos % 2}',
+                        'Album: Test Album',
+                        'duration: 120.5',
+                        f'Pos: {pos}',
+                        f'Id: {100 + pos}'
+                    ])
+                out.append('OK\n')
+                self.wfile.write('\n'.join(out).encode('utf-8'))
+            elif cmd.startswith('playlistid '):
+                song_id = int(cmd.split(' ', 1)[1])
+                pos = max(0, song_id - 100)
+                lines = [
+                    f'file: Track_{pos}.flac',
+                    f'Pos: {pos}',
+                    f'Id: {song_id}',
                     'OK\n'
                 ]
                 self.wfile.write('\n'.join(lines).encode('utf-8'))
@@ -137,6 +168,8 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(snap['song']['title'], 'Blue Train')
             self.assertEqual(snap['song']['artist'], 'John Coltrane')
             self.assertEqual(snap['songPosition'], 3)
+            self.assertEqual(snap['songId'], 102)
+            self.assertEqual(snap['playlistVersion'], 14)
             self.assertEqual(snap['playlistLength'], 8)
             self.assertTrue(snap['artUrl'].startswith('file://'))
             self.assertTrue(any(c.startswith('readpicture ') for c in MockMPDHandler.calls))
@@ -168,6 +201,41 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(MockMPDHandler.calls[-1], 'seekcur 95.40')
         client.action('volume', '40')
         self.assertEqual(MockMPDHandler.calls[-1], 'setvol 40')
+
+    def test_queue_windowing_and_search(self):
+        client = backend.Client(self.address)
+        q = client.queue('2:3:replace:')
+        self.assertTrue(q['ok'])
+        self.assertEqual(q['total'], 8)
+        self.assertEqual(q['matched'], 8)
+        self.assertEqual(q['offset'], 2)
+        self.assertEqual(len(q['items']), 3)
+        self.assertEqual(q['items'][0]['id'], 102)
+        self.assertIn('playlistinfo 2:5', MockMPDHandler.calls)
+
+        # Filtered query
+        qf = client.queue('0:10:replace:Artist 1')
+        self.assertEqual(qf['matched'], 4)
+        self.assertTrue(all(item['artist'] == 'Artist 1' for item in qf['items']))
+
+    def test_queue_mutations(self):
+        client = backend.Client(self.address)
+        client.action('play-id', '104')
+        self.assertEqual(MockMPDHandler.calls[-1], 'playid 104')
+        client.action('delete-id', '105')
+        self.assertEqual(MockMPDHandler.calls[-1], 'deleteid 105')
+        client.action('move-id', '106:1')
+        self.assertEqual(MockMPDHandler.calls[-1], 'moveid 106 1')
+        # Move track after current song (song is at pos 2; moving id 106 from pos 6 -> pos 3)
+        client.action('move-next', '106')
+        self.assertEqual(MockMPDHandler.calls[-1], 'moveid 106 3')
+        # Moving id 100 from pos 0 (before pos 2) -> pos 2 so it lands right after current song
+        client.action('move-next', '100')
+        self.assertEqual(MockMPDHandler.calls[-1], 'moveid 100 2')
+        client.action('shuffle-queue')
+        self.assertEqual(MockMPDHandler.calls[-1], 'shuffle')
+        client.action('clear-queue')
+        self.assertEqual(MockMPDHandler.calls[-1], 'clear')
 
     def test_mode_cycling(self):
         client = backend.Client(self.address)

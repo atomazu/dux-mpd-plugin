@@ -10,6 +10,7 @@ import socket
 
 MAX_ART_BYTES = 5 * 1024 * 1024
 MAX_CACHED_ART = 32
+MAX_QUEUE_LIMIT = 250
 
 
 class IntegrationError(Exception):
@@ -83,6 +84,38 @@ def detect_image_ext(data):
     if data.startswith((b'GIF87a', b'GIF89a')):
         return '.gif'
     return ''
+
+
+def parse_tracks(pairs):
+    tracks = []
+    current = None
+    for key, val in pairs:
+        if key == 'file':
+            if current is not None:
+                tracks.append(_normalize_track(current))
+            current = {'file': val}
+        elif current is not None and key not in current:
+            current[key] = val
+    if current is not None:
+        tracks.append(_normalize_track(current))
+    return tracks
+
+
+def _normalize_track(raw):
+    song_file = raw.get('file', '')
+    fallback_title = Path(song_file).name or song_file
+    duration = float(raw.get('duration', raw.get('Time', 0)) or 0)
+    track_id = int(raw.get('Id', 0) or 0)
+    return {
+        'id': track_id,
+        'trackId': track_id,
+        'pos': int(raw.get('Pos', 0) or 0),
+        'file': song_file,
+        'title': raw.get('Title') or raw.get('Name') or fallback_title,
+        'artist': raw.get('Artist') or raw.get('AlbumArtist') or raw.get('Performer') or '',
+        'album': raw.get('Album') or '',
+        'duration': max(0.0, duration)
+    }
 
 
 class Client:
@@ -256,13 +289,102 @@ class Client:
                 'consume': consume,
                 'elapsed': max(0.0, elapsed),
                 'duration': max(0.0, duration),
+                'playlistVersion': int(status_pairs.get('playlist', '0') or 0),
                 'playlistLength': int(status_pairs.get('playlistlength', '0') or 0),
                 'songPosition': int(status_pairs['song']) + 1 if 'song' in status_pairs else 0,
+                'songId': int(status_pairs['songid']) if 'songid' in status_pairs else -1,
                 'bitrate': bitrate_raw if bitrate_raw > 0 else None,
                 'audio': status_pairs.get('audio', ''),
                 'playbackError': status_pairs.get('error', ''),
                 'song': song,
                 'artUrl': art_url
+            }
+        finally:
+            try:
+                reader.close()
+            finally:
+                sock.close()
+
+    def queue(self, target=''):
+        parts = (target or '').split(':', 3)
+        try:
+            offset = int(parts[0]) if len(parts) > 0 and parts[0] != '' else -1
+            limit = int(parts[1]) if len(parts) > 1 and parts[1] != '' else 100
+        except ValueError:
+            raise IntegrationError('Queue offset and limit must be integers.') from None
+        limit = max(1, min(MAX_QUEUE_LIMIT, limit))
+        mode = parts[2] if len(parts) > 2 and parts[2] in ('replace', 'append', 'prepend', 'sync') else 'replace'
+        query = (parts[3] if len(parts) > 3 else '').strip()
+
+        sock, reader = self._connect()
+        try:
+            status = dict(self._execute(sock, reader, 'status'))
+            total = int(status.get('playlistlength', '0') or 0)
+            version = int(status.get('playlist', '0') or 0)
+            cur_pos = int(status.get('song', '0') or 0)
+            if total <= 0:
+                return {
+                    'ok': True,
+                    'action': 'queue',
+                    'playlistVersion': version,
+                    'total': 0,
+                    'matched': 0,
+                    'offset': 0,
+                    'limit': limit,
+                    'mode': mode,
+                    'query': query,
+                    'items': []
+                }
+            if not query:
+                if offset < 0:
+                    offset = max(0, min(max(0, total - limit), cur_pos - limit // 4))
+                elif mode == 'append':
+                    offset = max(0, min(offset, total))
+                else:
+                    offset = max(0, min(offset, max(0, total - 1)))
+                end = min(total, offset + limit)
+                pairs = self._execute(sock, reader, f'playlistinfo {offset}:{end}') if offset < end else []
+                items = parse_tracks(pairs)
+                return {
+                    'ok': True,
+                    'action': 'queue',
+                    'playlistVersion': version,
+                    'total': total,
+                    'matched': total,
+                    'offset': offset,
+                    'limit': limit,
+                    'mode': mode,
+                    'query': '',
+                    'items': items
+                }
+            needle = query.lower()
+            all_tracks = parse_tracks(self._execute(sock, reader, 'playlistinfo'))
+            matched_tracks = [
+                t for t in all_tracks
+                if needle in t['title'].lower()
+                or needle in t['artist'].lower()
+                or needle in t['album'].lower()
+                or needle in t['file'].lower()
+                or needle == str(t['pos'] + 1)
+            ]
+            matched_count = len(matched_tracks)
+            if offset < 0:
+                offset = 0
+            elif mode == 'append':
+                offset = max(0, min(offset, matched_count))
+            else:
+                offset = max(0, min(offset, max(0, matched_count - 1)))
+            return {
+                'ok': True,
+                'action': 'queue',
+                'playlistVersion': version,
+                'total': total,
+                'matched': matched_count,
+                'offset': offset,
+                'limit': limit,
+                'mode': mode,
+                'query': query,
+                'items': matched_tracks[offset:offset + limit]
             }
         finally:
             try:
@@ -330,6 +452,50 @@ class Client:
                     status = dict(self._execute(sock, reader, 'status'))
                     val = '0' if status.get('consume') in ('1', 'oneshot') else '1'
                 self._execute(sock, reader, f'consume {val}')
+            elif action in ('play-id', 'delete-id'):
+                try:
+                    song_id = int(target, 10)
+                except ValueError:
+                    raise IntegrationError('A valid track ID is required.') from None
+                if song_id < 0:
+                    raise IntegrationError('Track ID must be non-negative.')
+                cmd = 'playid' if action == 'play-id' else 'deleteid'
+                self._execute(sock, reader, f'{cmd} {song_id}')
+            elif action == 'move-id':
+                id_str, sep, pos_str = (target or '').partition(':')
+                if not sep:
+                    raise IntegrationError('Move target requires id:position.')
+                try:
+                    song_id = int(id_str, 10)
+                    to_pos = int(pos_str, 10)
+                except ValueError:
+                    raise IntegrationError('Move ID and position must be integers.') from None
+                if song_id < 0 or to_pos < 0:
+                    raise IntegrationError('Move ID and position must be non-negative.')
+                self._execute(sock, reader, f'moveid {song_id} {to_pos}')
+            elif action == 'move-next':
+                try:
+                    song_id = int(target, 10)
+                except ValueError:
+                    raise IntegrationError('A valid track ID is required.') from None
+                if song_id < 0:
+                    raise IntegrationError('Track ID must be non-negative.')
+                status = dict(self._execute(sock, reader, 'status'))
+                total = int(status.get('playlistlength', '0') or 0)
+                if total <= 1:
+                    return
+                cur_pos = int(status.get('song', '0') or 0)
+                song_info = dict(self._execute(sock, reader, f'playlistid {song_id}'))
+                from_pos = int(song_info.get('Pos', cur_pos))
+                if from_pos == cur_pos:
+                    return
+                to_pos = min(total - 1, cur_pos + 1) if from_pos > cur_pos else max(0, cur_pos)
+                if to_pos != from_pos:
+                    self._execute(sock, reader, f'moveid {song_id} {to_pos}')
+            elif action == 'shuffle-queue':
+                self._execute(sock, reader, 'shuffle')
+            elif action == 'clear-queue':
+                self._execute(sock, reader, 'clear')
             else:
                 raise IntegrationError('Unknown action.')
         finally:
@@ -349,11 +515,13 @@ def main():
     args = parser.parse_args()
     try:
         client = Client(args.address, load_password(args.password_file))
-        if args.action != 'snapshot':
+        if args.action == 'snapshot':
+            result = client.snapshot(fetch_art=not args.no_art)
+        elif args.action == 'queue':
+            result = client.queue(args.target)
+        else:
             client.action(args.action, args.target)
             result = {'ok': True, 'action': args.action}
-        else:
-            result = client.snapshot(fetch_art=not args.no_art)
     except IntegrationError as exc:
         result = {'ok': False, 'error': str(exc)}
     except OSError:

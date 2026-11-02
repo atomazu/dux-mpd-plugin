@@ -7,6 +7,7 @@ Version 0.1.0. A composite QML plugin with one shared backend, a horizontal/vert
 - Track metadata (Title, Artist, Album, queue position, audio format/bitrate) and playback state (`Playing`, `Paused`, `Stopped`, `Queue empty`).
 - Embedded and folder cover art fetched via MPD's `readpicture` and `albumart` commands, cached locally with a fallback icon.
 - Compact bar widget displaying the current song's cover art and an inline Play/Pause button, with `Artist • Album • Title` hover tooltip and mouse-wheel/touchpad volume scrolling.
+- Virtualized **Queue** tab engineered for thousands of entries: server-side windowed loading (`playlistinfo START:END`), progressive infinite scroll (up and down), instant 100-track range paging, jump-to-current-track, server-side search filtering, live drag-and-drop / step / play-next reordering (`moveid`), and optimistic track removal (`deleteid`).
 - Everyday MPRIS-equivalent transport controls: Play/Pause, Stop, Previous, Next, and seek scrubbing with smooth 1-second local elapsed progression while playing and diffed daemon updates.
 - Playback mode controls: Repeat, Random, Single (`Off` / `On` / `Oneshot`), and Consume.
 - Volume slider when MPD's hardware or software mixer is active; explicit indicator when mixer control is disabled.

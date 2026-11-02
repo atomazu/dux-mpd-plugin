@@ -26,13 +26,31 @@ PluginComponent {
                 elapsed: 0,
                 syncedAt: 0,
                 duration: 0,
+                playlistVersion: 0,
                 playlistLength: 0,
                 songPosition: 0,
+                songId: -1,
                 bitrate: null,
                 audio: "",
                 playbackError: "",
                 song: null,
                 artUrl: ""
+            })
+    }
+    PluginGlobalVar {
+        id: queueVar
+        varName: "queue"
+        defaultValue: ({
+                ok: false,
+                playlistVersion: -1,
+                total: 0,
+                matched: 0,
+                offset: 0,
+                limit: 100,
+                mode: "replace",
+                query: "",
+                items: [],
+                nonce: 0
             })
     }
     PluginGlobalVar {
@@ -42,6 +60,7 @@ PluginComponent {
     }
 
     readonly property var state: stateVar.value
+    readonly property var queueSlice: queueVar.value
     readonly property string actionError: errorVar.value
 
     // Typed primitive properties prevent unnecessary QML re-evaluations when unrelated state fields update.
@@ -62,8 +81,10 @@ PluginComponent {
     readonly property double elapsed: state.elapsed || 0
     readonly property double syncedAt: state.syncedAt || 0
     readonly property double duration: state.duration || 0
+    readonly property int playlistVersion: state.playlistVersion || 0
     readonly property int playlistLength: state.playlistLength || 0
     readonly property int songPosition: state.songPosition || 0
+    readonly property int songId: state.songId !== undefined ? state.songId : -1
     readonly property int bitrate: state.bitrate || 0
     readonly property string audio: state.audio || ""
     readonly property string playbackError: state.playbackError || ""
@@ -113,6 +134,10 @@ PluginComponent {
             target: target !== undefined && target !== null ? String(target) : "",
             nonce: Date.now() + Math.random()
         });
+    }
+
+    function requestQueue(offset, limit, mode, query) {
+        request("queue", [offset, limit, mode || "replace", query || ""].join(":"));
     }
 
     function handleWheel(wheelEvent) {
@@ -210,8 +235,8 @@ PluginComponent {
             showTrackTooltip(root.hoveredPillItem);
     }
 
-    popoutWidth: 460
-    popoutHeight: 540
+    popoutWidth: 480
+    popoutHeight: 600
 
     horizontalBarPill: Component {
         Item {
@@ -442,10 +467,10 @@ PluginComponent {
             Component.onDestruction: root.controlCenterDetailMounted = false
             controller: root
             width: parent.width
-            height: 460
+            height: 500
         }
     }
-    ccDetailHeight: 460
+    ccDetailHeight: 500
     popoutContent: Component {
         PopoutComponent {
             id: popout
@@ -453,7 +478,7 @@ PluginComponent {
             detailsText: ""
             Panel {
                 width: parent.width
-                height: Math.max(240, root.popoutHeight - popout.headerHeight - popout.detailsHeight - 24)
+                height: Math.max(260, root.popoutHeight - popout.headerHeight - popout.detailsHeight - 24)
                 controller: root
             }
         }
