@@ -10,15 +10,22 @@ import "Format.js" as Format
 Item {
     id: panel
     required property var controller
+    property bool inControlCenter: false
+    property var closeCallback: null
     property string page: "player"
     readonly property bool hasError: !controller.ok || controller.playbackError.length > 0
     readonly property string audioDetails: Format.audioFormat(controller.audio, controller.bitrate)
+    readonly property string trackCounter: {
+        if (controller.songPosition > 0 && controller.playlistLength > 0)
+            return "Track " + controller.songPosition + " of " + controller.playlistLength;
+        if (controller.playlistLength > 0)
+            return controller.playlistLength + " tracks in queue";
+        return "";
+    }
     readonly property string queueBadge: {
         var parts = [];
-        if (controller.songPosition > 0 && controller.playlistLength > 0)
-            parts.push("Track " + controller.songPosition + " of " + controller.playlistLength);
-        else if (controller.playlistLength > 0)
-            parts.push(controller.playlistLength + " tracks in queue");
+        if (trackCounter.length > 0)
+            parts.push(trackCounter);
         if (audioDetails.length > 0)
             parts.push(audioDetails);
         return parts.join(" · ");
@@ -240,33 +247,124 @@ Item {
 
     Component.onCompleted: syncLiveElapsed()
 
+    function switchPage(nextPage) {
+        panel.page = nextPage;
+        if (nextPage === "queue") {
+            if (!panel.queueInitialized) {
+                panel.centerOnCurrentPending = true;
+                panel.requestQueueWindow(-1, "replace");
+            } else if (panel.loadedQueueVersion !== panel.controller.playlistVersion) {
+                panel.requestQueueWindow(panel.windowStart, "sync");
+            }
+        } else if (nextPage === "search") {
+            searchTab.ensureInitialized();
+        }
+    }
+
+    // In Control Center detail dialog, float the compact tab header up into the dialog header row next to the '×' button
+    Item {
+        visible: panel.inControlCenter
+        width: parent.width
+        height: 44
+        y: -48
+        z: 20
+
+        Row {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            spacing: Theme.spacingXS
+
+            ActionButton {
+                text: "Player"
+                iconName: "tune"
+                prominent: panel.page === "player"
+                onClicked: panel.switchPage("player")
+            }
+
+            ActionButton {
+                text: panel.controller.playlistLength > 0 ? "Queue (" + panel.controller.playlistLength + ")" : "Queue"
+                iconName: "queue_music"
+                prominent: panel.page === "queue"
+                onClicked: panel.switchPage("queue")
+            }
+
+            ActionButton {
+                text: "Search"
+                iconName: "library_music"
+                prominent: panel.page === "search"
+                onClicked: panel.switchPage("search")
+            }
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: Theme.outlineVariant
+            opacity: 0.6
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
-        spacing: Theme.spacingM
+        spacing: Theme.spacingS
 
-        Material.DTabBar {
+        // In Bar Popout mode, render the single top header row with tabs + close button + subtle divider
+        ColumnLayout {
+            visible: !panel.inControlCenter
             Layout.fillWidth: true
-            model: [
-                {
-                    text: "Player",
-                    icon: "tune"
-                },
-                {
-                    text: panel.controller.playlistLength > 0 ? "Queue (" + panel.controller.playlistLength + ")" : "Queue",
-                    icon: "queue_music"
+            spacing: 6
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingXS
+
+                ActionButton {
+                    text: "Player"
+                    iconName: "tune"
+                    prominent: panel.page === "player"
+                    onClicked: panel.switchPage("player")
                 }
-            ]
-            currentIndex: panel.page === "player" ? 0 : 1
-            onTabClicked: index => {
-                panel.page = index === 0 ? "player" : "queue";
-                if (panel.page === "queue") {
-                    if (!panel.queueInitialized) {
-                        panel.centerOnCurrentPending = true;
-                        panel.requestQueueWindow(-1, "replace");
-                    } else if (panel.loadedQueueVersion !== panel.controller.playlistVersion) {
-                        panel.requestQueueWindow(panel.windowStart, "sync");
+
+                ActionButton {
+                    text: panel.controller.playlistLength > 0 ? "Queue (" + panel.controller.playlistLength + ")" : "Queue"
+                    iconName: "queue_music"
+                    prominent: panel.page === "queue"
+                    onClicked: panel.switchPage("queue")
+                }
+
+                ActionButton {
+                    text: "Search"
+                    iconName: "library_music"
+                    prominent: panel.page === "search"
+                    onClicked: panel.switchPage("search")
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                Material.DIconButton {
+                    visible: typeof panel.closeCallback === "function"
+                    iconName: "close"
+                    buttonSize: 28
+                    width: 28
+                    height: 28
+                    iconSize: 16
+                    tooltipText: "Close"
+                    onClicked: {
+                        if (typeof panel.closeCallback === "function")
+                            panel.closeCallback();
                     }
                 }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.outlineVariant
+                opacity: 0.6
             }
         }
 
@@ -1009,13 +1107,28 @@ Item {
             }
         }
 
-        RowLayout {
+        SearchTab {
+            id: searchTab
+            visible: panel.page === "search"
             Layout.fillWidth: true
-            spacing: Theme.spacingM
+            Layout.fillHeight: true
+            controller: panel.controller
+        }
 
-            ColumnLayout {
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+
+            Rectangle {
                 Layout.fillWidth: true
-                spacing: 2
+                Layout.preferredHeight: 1
+                color: Theme.outlineVariant
+                opacity: 0.5
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
 
                 StyledText {
                     Layout.fillWidth: true
@@ -1024,12 +1137,16 @@ Item {
                             return panel.controller.errorText || "MPD unavailable";
                         if (!panel.controller.hasSong)
                             return panel.controller.statusSummary;
-                        var line = panel.controller.songTitle;
+                        var parts = [];
+                        if (panel.controller.songPosition > 0 && panel.controller.playlistLength > 0)
+                            parts.push("#" + panel.controller.songPosition + "/" + panel.controller.playlistLength);
+                        var trackLine = panel.controller.songTitle;
                         if (panel.controller.songArtist)
-                            line += " — " + panel.controller.songArtist;
+                            trackLine += " — " + panel.controller.songArtist;
                         if (panel.controller.songAlbum)
-                            line += " · " + panel.controller.songAlbum;
-                        return line;
+                            trackLine += " · " + panel.controller.songAlbum;
+                        parts.push(trackLine);
+                        return parts.join(" · ");
                     }
                     color: Theme.surfaceText
                     font.pixelSize: Theme.fontSizeSmall
@@ -1038,29 +1155,45 @@ Item {
                     maximumLineCount: 1
                 }
 
-                StyledText {
-                    visible: text.length > 0
-                    Layout.fillWidth: true
-                    text: {
-                        if (panel.queueLoading && panel.page === "queue")
-                            return "Loading queue…";
-                        if (!panel.controller.ok)
-                            return panel.controller.hasUpdated ? "Last known state" : "";
-                        return panel.queueBadge;
-                    }
-                    color: Theme.surfaceVariantText
-                    font.pixelSize: Math.max(10, Theme.fontSizeSmall - 2)
-                    elide: Text.ElideRight
-                    maximumLineCount: 1
+                Material.DIconButton {
+                    iconName: "skip_previous"
+                    buttonSize: 28
+                    width: 28
+                    height: 28
+                    iconSize: 16
+                    variant: "tonal"
+                    tooltipText: "Previous track"
+                    enabled: panel.controller.ready && panel.controller.playlistLength > 0
+                    onClicked: panel.controller.request("previous")
                 }
-            }
 
-            ActionButton {
-                text: panel.controller.isPlaying ? "Pause" : "Play"
-                iconName: panel.controller.isPlaying ? "pause" : "play_arrow"
-                prominent: !panel.controller.isPlaying
-                enabled: panel.controller.canToggle
-                onClicked: panel.controller.request("toggle")
+                Material.DIconButton {
+                    iconName: panel.controller.isPlaying ? "pause" : "play_arrow"
+                    buttonSize: 28
+                    width: 28
+                    height: 28
+                    iconSize: 16
+                    variant: "filled"
+                    round: false
+                    checkable: true
+                    checked: panel.controller.isPlaying
+                    iconFilled: false
+                    tooltipText: panel.controller.isPlaying ? "Pause" : "Play"
+                    enabled: panel.controller.canToggle
+                    onClicked: panel.controller.request("toggle")
+                }
+
+                Material.DIconButton {
+                    iconName: "skip_next"
+                    buttonSize: 28
+                    width: 28
+                    height: 28
+                    iconSize: 16
+                    variant: "tonal"
+                    tooltipText: "Next track"
+                    enabled: panel.controller.ready && panel.controller.playlistLength > 0
+                    onClicked: panel.controller.request("next")
+                }
             }
         }
     }

@@ -5,12 +5,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 
 
 MAX_ART_BYTES = 5 * 1024 * 1024
-MAX_CACHED_ART = 32
+MAX_CACHED_ART = 512
 MAX_QUEUE_LIMIT = 250
+MAX_LIBRARY_LIMIT = 250
+MAX_ALBUM_ART_FETCH_PER_CALL = 24
+
+INLINE_TOKEN_RE = re.compile(r'\b(genre|artist|album|year|date):(?:"([^"]+)"|(\S+))', re.IGNORECASE)
 
 
 class IntegrationError(Exception):
@@ -74,6 +79,53 @@ def quote_arg(value):
     return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def parse_inline_query(raw_query=''):
+    tokens = {'genre': '', 'artist': '', 'album': '', 'year': ''}
+    if not raw_query:
+        return '', tokens
+
+    def _replace(match):
+        key = match.group(1).lower()
+        if key == 'date':
+            key = 'year'
+        val = (match.group(2) if match.group(2) is not None else match.group(3) or '').strip()
+        if val:
+            tokens[key] = val
+        return ' '
+
+    cleaned = INLINE_TOKEN_RE.sub(_replace, raw_query)
+    free_text = ' '.join(cleaned.split())
+    return free_text, tokens
+
+
+def build_legacy_filter_args(genre='', artist='', album='', year='', free_text=''):
+    parts = []
+    if genre:
+        parts.extend(['Genre', quote_arg(genre)])
+    if artist:
+        parts.extend(['Artist', quote_arg(artist)])
+    if album:
+        parts.extend(['Album', quote_arg(album)])
+    if year:
+        parts.extend(['Date', quote_arg(year)])
+    if free_text:
+        parts.extend(['any', quote_arg(free_text)])
+    return ' '.join(parts)
+
+
+def album_art_cache_key(uri='', album='', album_artist='', artist=''):
+    alb = (album or '').strip().lower()
+    art = (album_artist or artist or '').strip().lower()
+    if alb:
+        return f'album:{alb}|artist:{art}'
+    if uri:
+        parent = str(Path(uri).parent)
+        if parent and parent != '.':
+            return f'dir:{parent.lower()}'
+        return f'file:{uri}'
+    return ''
+
+
 def detect_image_ext(data):
     if data.startswith(b'\xff\xd8\xff'):
         return '.jpg'
@@ -106,6 +158,7 @@ def _normalize_track(raw):
     fallback_title = Path(song_file).name or song_file
     duration = float(raw.get('duration', raw.get('Time', 0)) or 0)
     track_id = int(raw.get('Id', 0) or 0)
+    date_val = str(raw.get('Date') or '').strip()
     return {
         'id': track_id,
         'trackId': track_id,
@@ -113,9 +166,40 @@ def _normalize_track(raw):
         'file': song_file,
         'title': raw.get('Title') or raw.get('Name') or fallback_title,
         'artist': raw.get('Artist') or raw.get('AlbumArtist') or raw.get('Performer') or '',
+        'albumArtist': raw.get('AlbumArtist') or raw.get('Artist') or '',
         'album': raw.get('Album') or '',
+        'genre': raw.get('Genre') or '',
+        'date': date_val[:4] if len(date_val) >= 4 else date_val,
+        'track': str(raw.get('Track') or ''),
         'duration': max(0.0, duration)
     }
+
+
+def _track_matches_filters(track, genre='', artist='', album='', year='', free_text=''):
+    if genre and track.get('genre', '').lower() != genre.lower():
+        return False
+    if artist:
+        needle_artist = artist.lower()
+        if track.get('artist', '').lower() != needle_artist and track.get('albumArtist', '').lower() != needle_artist and needle_artist not in track.get('artist', '').lower():
+            return False
+    if album and track.get('album', '').lower() != album.lower():
+        return False
+    if year and not track.get('date', '').lower().startswith(year.lower()):
+        return False
+    if free_text:
+        haystack = ' '.join([
+            track.get('title', ''),
+            track.get('artist', ''),
+            track.get('albumArtist', ''),
+            track.get('album', ''),
+            track.get('genre', ''),
+            track.get('date', ''),
+            track.get('file', '')
+        ]).lower()
+        for word in free_text.lower().split():
+            if word not in haystack:
+                return False
+    return True
 
 
 class Client:
@@ -221,17 +305,33 @@ class Client:
             if offset >= total_size:
                 return b''.join(chunks)
 
-    def _resolve_art(self, sock, reader, uri):
-        if not uri:
-            return ''
-        digest = hashlib.sha256(uri.encode('utf-8')).hexdigest()[:24]
+    def _cached_art_uri(self, uri='', album='', album_artist='', artist=''):
+        cache_key = album_art_cache_key(uri=uri, album=album, album_artist=album_artist, artist=artist)
+        if not cache_key:
+            return None
+        digest = hashlib.sha256(cache_key.encode('utf-8')).hexdigest()[:24]
         try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            os.chmod(self.cache_dir, 0o700)
             for ext in ('.jpg', '.png', '.webp', '.gif', '.none'):
                 cached = self.cache_dir / (digest + ext)
                 if cached.is_file():
                     return '' if ext == '.none' else cached.resolve().as_uri()
+        except OSError:
+            return ''
+        return None
+
+    def _resolve_art(self, sock, reader, uri, album='', album_artist='', artist=''):
+        if not uri:
+            return ''
+        cached_uri = self._cached_art_uri(uri=uri, album=album, album_artist=album_artist, artist=artist)
+        if cached_uri is not None:
+            return cached_uri
+        cache_key = album_art_cache_key(uri=uri, album=album, album_artist=album_artist, artist=artist)
+        if not cache_key:
+            return ''
+        digest = hashlib.sha256(cache_key.encode('utf-8')).hexdigest()[:24]
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.cache_dir, 0o700)
             raw = self._fetch_binary(sock, reader, 'readpicture', uri)
             if not raw:
                 raw = self._fetch_binary(sock, reader, 'albumart', uri)
@@ -246,6 +346,33 @@ class Client:
             return target.resolve().as_uri() if ext else ''
         except OSError:
             return ''
+
+    def _query_tracks(self, sock, reader, genre='', artist='', album='', year='', free_text=''):
+        filter_args = build_legacy_filter_args(genre, artist, album, year, free_text)
+        pairs = []
+        if filter_args:
+            try:
+                pairs = self._execute(sock, reader, f'search {filter_args}')
+            except IntegrationError:
+                pairs = self._execute(sock, reader, 'listallinfo')
+        else:
+            try:
+                pairs = self._execute(sock, reader, 'search any ""')
+            except IntegrationError:
+                pairs = self._execute(sock, reader, 'listallinfo')
+        tracks = parse_tracks(pairs)
+        return [
+            t for t in tracks
+            if _track_matches_filters(t, genre=genre, artist=artist, album=album, year=year, free_text=free_text)
+        ]
+
+    def _list_genres(self, sock, reader):
+        try:
+            pairs = self._execute(sock, reader, 'list Genre')
+            genres = sorted({val.strip() for key, val in pairs if key.lower() == 'genre' and val.strip()}, key=lambda s: s.lower())
+            return genres
+        except IntegrationError:
+            return []
 
     def snapshot(self, fetch_art=True):
         sock, reader = self._connect()
@@ -278,7 +405,14 @@ class Client:
                     'id': song_pairs.get('Id') or ''
                 }
                 if fetch_art:
-                    art_url = self._resolve_art(sock, reader, song_file)
+                    art_url = self._resolve_art(
+                        sock,
+                        reader,
+                        song_file,
+                        album=song.get('album', ''),
+                        album_artist=song_pairs.get('AlbumArtist', ''),
+                        artist=song.get('artist', '')
+                    )
             return {
                 'ok': True,
                 'state': state,
@@ -392,6 +526,286 @@ class Client:
             finally:
                 sock.close()
 
+    def library(self, target='', fetch_art=True):
+        spec = {}
+        if target:
+            try:
+                spec = json.loads(target)
+                if not isinstance(spec, dict):
+                    spec = {}
+            except ValueError:
+                raise IntegrationError('Library query target must be valid JSON.') from None
+
+        scope = str(spec.get('scope') or 'albums').lower()
+        if scope not in ('albums', 'tracks', 'artists', 'genres'):
+            scope = 'albums'
+        mode = str(spec.get('mode') or 'replace').lower()
+        if mode not in ('replace', 'append', 'prepend', 'sync'):
+            mode = 'replace'
+        try:
+            offset = max(0, int(spec.get('offset', 0) or 0))
+            limit = max(1, min(MAX_LIBRARY_LIMIT, int(spec.get('limit', 90) or 90)))
+        except ValueError:
+            raise IntegrationError('Library offset and limit must be integers.') from None
+
+        raw_query = str(spec.get('query') or '').strip()
+        free_text, inline_tokens = parse_inline_query(raw_query)
+        genre = str(spec.get('genre') or inline_tokens['genre'] or '').strip()
+        artist = str(spec.get('artist') or inline_tokens['artist'] or '').strip()
+        album = str(spec.get('album') or inline_tokens['album'] or '').strip()
+        year = str(spec.get('year') or inline_tokens['year'] or '').strip()
+
+        sock, reader = self._connect()
+        try:
+            genres_list = self._list_genres(sock, reader)
+            tracks = self._query_tracks(
+                sock,
+                reader,
+                genre=genre,
+                artist=artist,
+                album=album,
+                year=year,
+                free_text=free_text
+            )
+            if not genres_list and tracks:
+                genres_list = sorted({t['genre'] for t in tracks if t.get('genre')}, key=lambda s: s.lower())
+
+            if scope == 'genres':
+                genre_map = {}
+                for t in tracks:
+                    g_name = t.get('genre') or 'Unknown Genre'
+                    entry = genre_map.get(g_name)
+                    if entry is None:
+                        entry = {
+                            'kind': 'genre',
+                            'title': g_name,
+                            'subtitle': '',
+                            'artist': '',
+                            'album': '',
+                            'genre': '' if g_name == 'Unknown Genre' else g_name,
+                            'date': '',
+                            'file': t.get('file', ''),
+                            'duration': 0.0,
+                            'trackCount': 0,
+                            'albumsSet': set(),
+                            'artUrl': ''
+                        }
+                        genre_map[g_name] = entry
+                    entry['trackCount'] += 1
+                    entry['duration'] += t.get('duration', 0.0)
+                    if t.get('album'):
+                        entry['albumsSet'].add(t['album'])
+
+                # Include genres from `list Genre` if no artist/album/year filter excluded them
+                if not artist and not album and not year:
+                    for g_name in genres_list:
+                        if genre and g_name.lower() != genre.lower():
+                            continue
+                        if free_text and not all(w in g_name.lower() for w in free_text.lower().split()):
+                            continue
+                        if g_name not in genre_map:
+                            genre_map[g_name] = {
+                                'kind': 'genre',
+                                'title': g_name,
+                                'subtitle': 'Genre',
+                                'artist': '',
+                                'album': '',
+                                'genre': g_name,
+                                'date': '',
+                                'file': '',
+                                'duration': 0.0,
+                                'trackCount': 0,
+                                'albumsSet': set(),
+                                'artUrl': ''
+                            }
+
+                all_items = sorted(genre_map.values(), key=lambda x: (x['title'] == 'Unknown Genre', x['title'].lower()))
+                for item in all_items:
+                    album_cnt = len(item.pop('albumsSet', set()))
+                    parts = []
+                    if album_cnt > 0:
+                        parts.append(f'{album_cnt} album' + ('s' if album_cnt != 1 else ''))
+                    if item['trackCount'] > 0:
+                        parts.append(f"{item['trackCount']} track" + ('s' if item['trackCount'] != 1 else ''))
+                    item['subtitle'] = ' · '.join(parts) if parts else 'Genre'
+                    item['albumCount'] = album_cnt
+
+            elif scope == 'artists':
+                artist_map = {}
+                for t in tracks:
+                    a_name = t.get('albumArtist') or t.get('artist') or 'Unknown Artist'
+                    entry = artist_map.get(a_name)
+                    if entry is None:
+                        entry = {
+                            'kind': 'artist',
+                            'title': a_name,
+                            'subtitle': '',
+                            'artist': '' if a_name == 'Unknown Artist' else a_name,
+                            'albumArtist': '' if a_name == 'Unknown Artist' else a_name,
+                            'album': t.get('album', ''),
+                            'genre': t.get('genre', ''),
+                            'date': '',
+                            'file': t.get('file', ''),
+                            'duration': 0.0,
+                            'trackCount': 0,
+                            'albumsSet': set(),
+                            'artUrl': ''
+                        }
+                        artist_map[a_name] = entry
+                    entry['trackCount'] += 1
+                    entry['duration'] += t.get('duration', 0.0)
+                    if t.get('album'):
+                        entry['albumsSet'].add(t['album'])
+
+                all_items = sorted(artist_map.values(), key=lambda x: (x['title'] == 'Unknown Artist', x['title'].lower()))
+                for item in all_items:
+                    album_cnt = len(item.pop('albumsSet', set()))
+                    parts = []
+                    if album_cnt > 0:
+                        parts.append(f'{album_cnt} album' + ('s' if album_cnt != 1 else ''))
+                    if item['trackCount'] > 0:
+                        parts.append(f"{item['trackCount']} track" + ('s' if item['trackCount'] != 1 else ''))
+                    item['subtitle'] = ' · '.join(parts) if parts else 'Artist'
+                    item['albumCount'] = album_cnt
+
+            elif scope == 'albums':
+                album_map = {}
+                for t in tracks:
+                    alb_name = t.get('album') or 'Singles & Unassigned'
+                    alb_artist = t.get('albumArtist') or t.get('artist') or 'Unknown Artist'
+                    key = (alb_name.lower(), alb_artist.lower())
+                    entry = album_map.get(key)
+                    if entry is None:
+                        entry = {
+                            'kind': 'album',
+                            'title': alb_name,
+                            'subtitle': alb_artist,
+                            'artist': '' if alb_artist == 'Unknown Artist' else alb_artist,
+                            'albumArtist': '' if alb_artist == 'Unknown Artist' else alb_artist,
+                            'album': '' if alb_name == 'Singles & Unassigned' else alb_name,
+                            'genre': t.get('genre', ''),
+                            'date': t.get('date', ''),
+                            'file': t.get('file', ''),
+                            'duration': 0.0,
+                            'trackCount': 0,
+                            'albumCount': 1,
+                            'artUrl': ''
+                        }
+                        album_map[key] = entry
+                    entry['trackCount'] += 1
+                    entry['duration'] += t.get('duration', 0.0)
+                    if not entry['date'] and t.get('date'):
+                        entry['date'] = t['date']
+                    if not entry['genre'] and t.get('genre'):
+                        entry['genre'] = t['genre']
+                    if not entry['file'] and t.get('file'):
+                        entry['file'] = t['file']
+
+                all_items = sorted(
+                    album_map.values(),
+                    key=lambda x: (x['title'] == 'Singles & Unassigned', x['title'].lower(), x['subtitle'].lower())
+                )
+
+            else:
+                # scope == 'tracks'
+                all_items = []
+                for t in tracks:
+                    sub_parts = []
+                    if t.get('artist'):
+                        sub_parts.append(t['artist'])
+                    if t.get('album'):
+                        sub_parts.append(t['album'])
+                    all_items.append({
+                        'kind': 'track',
+                        'title': t['title'],
+                        'subtitle': ' · '.join(sub_parts) if sub_parts else t['file'],
+                        'artist': t.get('artist', ''),
+                        'albumArtist': t.get('albumArtist', ''),
+                        'album': t.get('album', ''),
+                        'genre': t.get('genre', ''),
+                        'date': t.get('date', ''),
+                        'file': t['file'],
+                        'duration': t.get('duration', 0.0),
+                        'trackCount': 1,
+                        'albumCount': 0,
+                        'artUrl': ''
+                    })
+
+            matched_count = len(all_items)
+            if mode == 'append':
+                offset = max(0, min(offset, matched_count))
+            else:
+                offset = max(0, min(offset, max(0, matched_count - 1))) if matched_count > 0 else 0
+            sliced = all_items[offset:offset + limit]
+
+            has_uncached_art = False
+            if fetch_art and sliced:
+                fetched_network = 0
+                album_art_memo = {}
+                for item in sliced:
+                    sample_uri = item.get('file', '')
+                    if not sample_uri:
+                        continue
+                    item_album = item.get('album', '')
+                    item_album_artist = item.get('albumArtist', '') or item.get('artist', '')
+                    cache_key = album_art_cache_key(
+                        uri=sample_uri,
+                        album=item_album,
+                        album_artist=item_album_artist,
+                        artist=item.get('artist', '')
+                    )
+                    if cache_key in album_art_memo:
+                        item['artUrl'] = album_art_memo[cache_key]
+                        continue
+                    cached_uri = self._cached_art_uri(
+                        uri=sample_uri,
+                        album=item_album,
+                        album_artist=item_album_artist,
+                        artist=item.get('artist', '')
+                    )
+                    if cached_uri is not None:
+                        item['artUrl'] = cached_uri
+                        album_art_memo[cache_key] = cached_uri
+                    elif scope in ('albums', 'tracks', 'artists'):
+                        if fetched_network < MAX_ALBUM_ART_FETCH_PER_CALL:
+                            resolved_uri = self._resolve_art(
+                                sock,
+                                reader,
+                                sample_uri,
+                                album=item_album,
+                                album_artist=item_album_artist,
+                                artist=item.get('artist', '')
+                            )
+                            item['artUrl'] = resolved_uri
+                            album_art_memo[cache_key] = resolved_uri
+                            fetched_network += 1
+                        else:
+                            has_uncached_art = True
+
+            return {
+                'ok': True,
+                'action': 'library',
+                'scope': scope,
+                'mode': mode,
+                'query': raw_query,
+                'genre': genre,
+                'artist': artist,
+                'album': album,
+                'year': year,
+                'total': matched_count,
+                'matched': matched_count,
+                'offset': offset,
+                'limit': limit,
+                'hasUncachedArt': has_uncached_art,
+                'genres': genres_list,
+                'items': sliced
+            }
+        finally:
+            try:
+                reader.close()
+            finally:
+                sock.close()
+
     def action(self, action, target=''):
         sock, reader = self._connect()
         try:
@@ -412,7 +826,7 @@ class Client:
                 self._execute(sock, reader, 'pause 0')
             elif action == 'stop':
                 self._execute(sock, reader, 'stop')
-            elif action in ('next', 'previous', 'clearerror'):
+            elif action in ('next', 'previous', 'clearerror', 'update'):
                 self._execute(sock, reader, action)
             elif action == 'seek':
                 try:
@@ -496,6 +910,71 @@ class Client:
                 self._execute(sock, reader, 'shuffle')
             elif action == 'clear-queue':
                 self._execute(sock, reader, 'clear')
+            elif action == 'add-uri':
+                if not target:
+                    raise IntegrationError('Track URI is required.')
+                self._execute(sock, reader, f'add {quote_arg(target)}')
+            elif action == 'play-uri':
+                if not target:
+                    raise IntegrationError('Track URI is required.')
+                res = dict(self._execute(sock, reader, f'addid {quote_arg(target)}'))
+                song_id = res.get('Id')
+                if song_id is not None:
+                    self._execute(sock, reader, f'playid {int(song_id)}')
+                else:
+                    self._execute(sock, reader, 'play')
+            elif action == 'insert-uri-next':
+                if not target:
+                    raise IntegrationError('Track URI is required.')
+                status = dict(self._execute(sock, reader, 'status'))
+                total = int(status.get('playlistlength', '0') or 0)
+                if 'song' in status and total > 0:
+                    next_pos = min(total, int(status['song']) + 1)
+                    self._execute(sock, reader, f'addid {quote_arg(target)} {next_pos}')
+                else:
+                    self._execute(sock, reader, f'addid {quote_arg(target)}')
+            elif action in ('add-filter', 'play-filter'):
+                spec = {}
+                if target:
+                    try:
+                        spec = json.loads(target)
+                        if not isinstance(spec, dict):
+                            spec = {}
+                    except ValueError:
+                        raise IntegrationError('Filter action target must be valid JSON.') from None
+                raw_query = str(spec.get('query') or '').strip()
+                free_text, inline_tokens = parse_inline_query(raw_query)
+                genre = str(spec.get('genre') or inline_tokens['genre'] or '').strip()
+                artist = str(spec.get('artist') or inline_tokens['artist'] or '').strip()
+                album = str(spec.get('album') or inline_tokens['album'] or '').strip()
+                year = str(spec.get('year') or inline_tokens['year'] or '').strip()
+                tracks = self._query_tracks(
+                    sock,
+                    reader,
+                    genre=genre,
+                    artist=artist,
+                    album=album,
+                    year=year,
+                    free_text=free_text
+                )
+                if not tracks:
+                    raise IntegrationError('No matching tracks to add.')
+                first_id = None
+                for idx, t in enumerate(tracks):
+                    uri = t.get('file', '')
+                    if not uri:
+                        continue
+                    if idx == 0 and action == 'play-filter':
+                        added = dict(self._execute(sock, reader, f'addid {quote_arg(uri)}'))
+                        if 'Id' in added:
+                            first_id = int(added['Id'])
+                    else:
+                        self._execute(sock, reader, f'add {quote_arg(uri)}')
+                if action == 'play-filter':
+                    if first_id is not None:
+                        self._execute(sock, reader, f'playid {first_id}')
+                    else:
+                        self._execute(sock, reader, 'play')
             else:
                 raise IntegrationError('Unknown action.')
         finally:
@@ -519,6 +998,8 @@ def main():
             result = client.snapshot(fetch_art=not args.no_art)
         elif args.action == 'queue':
             result = client.queue(args.target)
+        elif args.action == 'library':
+            result = client.library(args.target, fetch_art=not args.no_art)
         else:
             client.action(args.action, args.target)
             result = {'ok': True, 'action': args.action}

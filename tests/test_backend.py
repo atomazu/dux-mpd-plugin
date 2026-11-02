@@ -108,6 +108,45 @@ class MockMPDHandler(socketserver.StreamRequestHandler):
                     'OK\n'
                 ]
                 self.wfile.write('\n'.join(lines).encode('utf-8'))
+            elif cmd == 'list Genre':
+                lines = [
+                    'Genre: Electronic',
+                    'Genre: Jazz',
+                    'Genre: Rock',
+                    'OK\n'
+                ]
+                self.wfile.write('\n'.join(lines).encode('utf-8'))
+            elif cmd.startswith('search ') or cmd == 'listallinfo':
+                out = [
+                    'file: Electronic/Eclipse/01_Monolith.flac',
+                    'Title: Monolith',
+                    'Artist: meganeko',
+                    'AlbumArtist: meganeko',
+                    'Album: Eclipse',
+                    'Genre: Electronic',
+                    'Date: 2023',
+                    'duration: 308.0',
+                    'file: Electronic/Eclipse/02_Feral.flac',
+                    'Title: Feral',
+                    'Artist: meganeko',
+                    'AlbumArtist: meganeko',
+                    'Album: Eclipse',
+                    'Genre: Electronic',
+                    'Date: 2023',
+                    'duration: 267.0',
+                    'file: Jazz/Blue_Train.flac',
+                    'Title: Blue Train',
+                    'Artist: John Coltrane',
+                    'AlbumArtist: John Coltrane',
+                    'Album: Blue Train',
+                    'Genre: Jazz',
+                    'Date: 1957',
+                    'duration: 642.0',
+                    'OK\n'
+                ]
+                self.wfile.write('\n'.join(out).encode('utf-8'))
+            elif cmd.startswith('addid '):
+                self.wfile.write(b'Id: 501\nOK\n')
             elif cmd.startswith('readpicture '):
                 if self.fail_readpicture or not self.art_payload:
                     self.wfile.write(b'ACK [50@0] {readpicture} No picture\n')
@@ -274,6 +313,63 @@ class BackendTests(unittest.TestCase):
                 backend.resolve_endpoint(bad)
         with self.assertRaises(backend.IntegrationError):
             backend.quote_arg('bad\ninjection')
+
+    def test_library_scopes_and_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = backend.Client(self.address, cache_dir=tmp)
+            # 1. Albums scope
+            res_albums = client.library(json.dumps({'scope': 'albums', 'offset': 0, 'limit': 50}))
+            self.assertTrue(res_albums['ok'])
+            self.assertEqual(res_albums['matched'], 2)
+            self.assertEqual(res_albums['genres'], ['Electronic', 'Jazz', 'Rock'])
+            titles = [item['title'] for item in res_albums['items']]
+            self.assertEqual(titles, ['Blue Train', 'Eclipse'])
+            eclipse = [item for item in res_albums['items'] if item['title'] == 'Eclipse'][0]
+            self.assertEqual(eclipse['trackCount'], 2)
+            self.assertEqual(eclipse['artist'], 'meganeko')
+            self.assertTrue(eclipse['artUrl'].startswith('file://'))
+
+            # 2. Genres scope
+            res_genres = client.library(json.dumps({'scope': 'genres'}))
+            self.assertEqual([g['title'] for g in res_genres['items']], ['Electronic', 'Jazz', 'Rock'])
+
+            # 3. Artists scope with inline genre token
+            res_artists = client.library(json.dumps({'scope': 'artists', 'query': 'genre:Electronic'}))
+            self.assertEqual(res_artists['matched'], 1)
+            self.assertEqual(res_artists['items'][0]['title'], 'meganeko')
+            self.assertEqual(res_artists['items'][0]['albumCount'], 1)
+
+            # 4. Tracks scope with multi-facet filter + shared album art cache
+            MockMPDHandler.calls.clear()
+            res_tracks = client.library(json.dumps({
+                'scope': 'tracks',
+                'genre': 'Electronic',
+                'artist': 'meganeko',
+                'album': 'Eclipse',
+                'query': 'Feral'
+            }))
+            self.assertEqual(res_tracks['matched'], 1)
+            self.assertEqual(res_tracks['items'][0]['title'], 'Feral')
+            # Feral shares Eclipse's cached album cover without needing another readpicture call!
+            self.assertEqual(res_tracks['items'][0]['artUrl'], eclipse['artUrl'])
+            self.assertFalse(any(c.startswith('readpicture ') for c in MockMPDHandler.calls))
+
+    def test_library_queue_actions(self):
+        client = backend.Client(self.address)
+        client.action('add-uri', 'Electronic/Eclipse/01_Monolith.flac')
+        self.assertEqual(MockMPDHandler.calls[-1], 'add "Electronic/Eclipse/01_Monolith.flac"')
+
+        client.action('play-uri', 'Electronic/Eclipse/01_Monolith.flac')
+        self.assertIn('addid "Electronic/Eclipse/01_Monolith.flac"', MockMPDHandler.calls)
+        self.assertEqual(MockMPDHandler.calls[-1], 'playid 501')
+
+        client.action('insert-uri-next', 'Electronic/Eclipse/02_Feral.flac')
+        self.assertEqual(MockMPDHandler.calls[-1], 'addid "Electronic/Eclipse/02_Feral.flac" 3')
+
+        client.action('play-filter', json.dumps({'genre': 'Electronic', 'album': 'Eclipse'}))
+        self.assertIn('addid "Electronic/Eclipse/01_Monolith.flac"', MockMPDHandler.calls)
+        self.assertIn('add "Electronic/Eclipse/02_Feral.flac"', MockMPDHandler.calls)
+        self.assertEqual(MockMPDHandler.calls[-1], 'playid 501')
 
 
 if __name__ == '__main__':

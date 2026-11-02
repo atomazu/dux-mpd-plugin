@@ -88,12 +88,12 @@ PluginComponent {
             next();
             return;
         }
-        if (action === "queue") {
-            const existingQueueIdx = pending.findIndex(item => item.action === "queue");
-            if (existingQueueIdx >= 0) {
+        if (action === "queue" || action === "library") {
+            const existingIdx = pending.findIndex(item => item.action === action);
+            if (existingIdx >= 0) {
                 const copy = pending.slice();
-                copy[existingQueueIdx] = {
-                    action: "queue",
+                copy[existingIdx] = {
+                    action: action,
                     target: cleanTarget
                 };
                 pending = copy;
@@ -102,7 +102,7 @@ PluginComponent {
             }
             pending = pending.concat([
                 {
-                    action: "queue",
+                    action: action,
                     target: cleanTarget
                 }
             ]);
@@ -195,6 +195,14 @@ PluginComponent {
                 PluginService.setGlobalVar("mpdControl", "queue", result);
             } else {
                 actionError = result.error || "Failed to load queue.";
+                publishState(false);
+            }
+        } else if (active.action === "library") {
+            if (result.ok) {
+                result.nonce = Date.now() + Math.random();
+                PluginService.setGlobalVar("mpdControl", "library", result);
+            } else {
+                actionError = result.error || "Failed to search library.";
                 publishState(false);
             }
         } else {

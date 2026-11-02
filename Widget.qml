@@ -54,6 +54,27 @@ PluginComponent {
             })
     }
     PluginGlobalVar {
+        id: libraryVar
+        varName: "library"
+        defaultValue: ({
+                ok: false,
+                scope: "albums",
+                mode: "replace",
+                query: "",
+                genre: "",
+                artist: "",
+                album: "",
+                year: "",
+                total: 0,
+                matched: 0,
+                offset: 0,
+                limit: 90,
+                genres: [],
+                items: [],
+                nonce: 0
+            })
+    }
+    PluginGlobalVar {
         id: errorVar
         varName: "actionError"
         defaultValue: ""
@@ -61,6 +82,7 @@ PluginComponent {
 
     readonly property var state: stateVar.value
     readonly property var queueSlice: queueVar.value
+    readonly property var librarySlice: libraryVar.value
     readonly property string actionError: errorVar.value
 
     // Typed primitive properties prevent unnecessary QML re-evaluations when unrelated state fields update.
@@ -138,6 +160,10 @@ PluginComponent {
 
     function requestQueue(offset, limit, mode, query) {
         request("queue", [offset, limit, mode || "replace", query || ""].join(":"));
+    }
+
+    function requestLibrary(params) {
+        request("library", JSON.stringify(params || {}));
     }
 
     function handleWheel(wheelEvent) {
@@ -454,7 +480,7 @@ PluginComponent {
     // Dux 2.0 PluginDetailShell derives its title from ccWidgetPrimaryText.
     // It owns a separate PluginInstanceHost, so this flag only affects that view.
     property bool controlCenterDetailMounted: false
-    ccWidgetPrimaryText: controlCenterDetailMounted ? "MPD" : (hasSong ? songTitle : "MPD")
+    ccWidgetPrimaryText: controlCenterDetailMounted ? " " : (hasSong ? songTitle : "MPD")
     ccWidgetSecondaryText: ok ? (hasSong && songArtist ? songArtist + " · " + statusSummary : statusSummary) : "MPD unavailable"
     ccWidgetIsActive: isPlaying
     onCcWidgetToggled: {
@@ -466,20 +492,22 @@ PluginComponent {
             Component.onCompleted: root.controlCenterDetailMounted = true
             Component.onDestruction: root.controlCenterDetailMounted = false
             controller: root
+            inControlCenter: true
             width: parent.width
-            height: 500
+            height: 520
         }
     }
-    ccDetailHeight: 500
+    ccDetailHeight: 520
     popoutContent: Component {
         PopoutComponent {
             id: popout
-            headerText: "MPD"
+            headerText: ""
             detailsText: ""
             Panel {
                 width: parent.width
                 height: Math.max(260, root.popoutHeight - popout.headerHeight - popout.detailsHeight - 24)
                 controller: root
+                closeCallback: popout.closePopout
             }
         }
     }
