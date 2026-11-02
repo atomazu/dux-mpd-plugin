@@ -933,15 +933,17 @@ class Client:
                     self._execute(sock, reader, f'addid {quote_arg(target)} {next_pos}')
                 else:
                     self._execute(sock, reader, f'addid {quote_arg(target)}')
-            elif action in ('add-filter', 'play-filter'):
+            elif action in ('add-filter', 'play-filter', 'replace-filter'):
                 spec = {}
                 if target:
                     try:
-                        spec = json.loads(target)
-                        if not isinstance(spec, dict):
-                            spec = {}
+                        parsed = json.loads(target)
+                        if isinstance(parsed, dict):
+                            spec = parsed
+                        else:
+                            spec = {'query': str(target)}
                     except ValueError:
-                        raise IntegrationError('Filter action target must be valid JSON.') from None
+                        spec = {'query': str(target)}
                 raw_query = str(spec.get('query') or '').strip()
                 free_text, inline_tokens = parse_inline_query(raw_query)
                 genre = str(spec.get('genre') or inline_tokens['genre'] or '').strip()
@@ -959,18 +961,21 @@ class Client:
                 )
                 if not tracks:
                     raise IntegrationError('No matching tracks to add.')
+                if action == 'replace-filter':
+                    self._execute(sock, reader, 'clear')
+                should_play = action in ('play-filter', 'replace-filter')
                 first_id = None
                 for idx, t in enumerate(tracks):
                     uri = t.get('file', '')
                     if not uri:
                         continue
-                    if idx == 0 and action == 'play-filter':
+                    if idx == 0 and should_play:
                         added = dict(self._execute(sock, reader, f'addid {quote_arg(uri)}'))
                         if 'Id' in added:
                             first_id = int(added['Id'])
                     else:
                         self._execute(sock, reader, f'add {quote_arg(uri)}')
-                if action == 'play-filter':
+                if should_play:
                     if first_id is not None:
                         self._execute(sock, reader, f'playid {first_id}')
                     else:

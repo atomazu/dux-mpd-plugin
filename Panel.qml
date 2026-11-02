@@ -245,9 +245,50 @@ Item {
         }
     }
 
-    Component.onCompleted: syncLiveElapsed()
+    Component.onCompleted: {
+        syncLiveElapsed();
+        if (inControlCenter)
+            Qt.callLater(hideControlCenterChrome);
+    }
+
+    function hideControlCenterChrome() {
+        let p = panel.parent;
+        while (p) {
+            if (p.children) {
+                for (let i = 0; i < p.children.length; i++) {
+                    const ch = p.children[i];
+                    if (ch && ch !== panel && ch.height > 20 && ch.height < 80 && ch.y === 0) {
+                        ch.visible = false;
+                        ch.height = 0;
+                    }
+                }
+            }
+            p = p.parent;
+        }
+    }
+
+    function closeHost() {
+        if (typeof panel.closeCallback === "function") {
+            panel.closeCallback();
+            return;
+        }
+        let p = panel.parent;
+        while (p) {
+            if (typeof p.backRequested === "function") {
+                p.backRequested();
+                return;
+            }
+            if (typeof p.close === "function") {
+                p.close();
+                return;
+            }
+            p = p.parent;
+        }
+    }
 
     function switchPage(nextPage) {
+        if (nextPage === panel.page)
+            return;
         panel.page = nextPage;
         if (nextPage === "queue") {
             if (!panel.queueInitialized) {
@@ -261,58 +302,13 @@ Item {
         }
     }
 
-    // In Control Center detail dialog, float the compact tab header up into the dialog header row next to the '×' button
-    Item {
-        visible: panel.inControlCenter
-        width: parent.width
-        height: 44
-        y: -48
-        z: 20
-
-        Row {
-            anchors.left: parent.left
-            anchors.top: parent.top
-            spacing: Theme.spacingXS
-
-            ActionButton {
-                text: "Player"
-                iconName: "tune"
-                prominent: panel.page === "player"
-                onClicked: panel.switchPage("player")
-            }
-
-            ActionButton {
-                text: panel.controller.playlistLength > 0 ? "Queue (" + panel.controller.playlistLength + ")" : "Queue"
-                iconName: "queue_music"
-                prominent: panel.page === "queue"
-                onClicked: panel.switchPage("queue")
-            }
-
-            ActionButton {
-                text: "Search"
-                iconName: "library_music"
-                prominent: panel.page === "search"
-                onClicked: panel.switchPage("search")
-            }
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: Theme.outlineVariant
-            opacity: 0.6
-        }
-    }
-
     ColumnLayout {
         anchors.fill: parent
         spacing: Theme.spacingS
 
-        // In Bar Popout mode, render the single top header row with tabs + close button + subtle divider
+        // Top Tab Bar: Track | Queue | Search (fills horizontal space) + small custom Close '×' on the right
         ColumnLayout {
-            visible: !panel.inControlCenter
+            id: topTabBar
             Layout.fillWidth: true
             spacing: 6
 
@@ -321,13 +317,19 @@ Item {
                 spacing: Theme.spacingXS
 
                 ActionButton {
-                    text: "Player"
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    buttonHeight: 30
+                    text: "Track"
                     iconName: "tune"
                     prominent: panel.page === "player"
                     onClicked: panel.switchPage("player")
                 }
 
                 ActionButton {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    buttonHeight: 30
                     text: panel.controller.playlistLength > 0 ? "Queue (" + panel.controller.playlistLength + ")" : "Queue"
                     iconName: "queue_music"
                     prominent: panel.page === "queue"
@@ -335,28 +337,24 @@ Item {
                 }
 
                 ActionButton {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    buttonHeight: 30
                     text: "Search"
                     iconName: "library_music"
                     prominent: panel.page === "search"
                     onClicked: panel.switchPage("search")
                 }
 
-                Item {
-                    Layout.fillWidth: true
-                }
-
                 Material.DIconButton {
-                    visible: typeof panel.closeCallback === "function"
                     iconName: "close"
                     buttonSize: 28
                     width: 28
                     height: 28
                     iconSize: 16
+                    variant: "tonal"
                     tooltipText: "Close"
-                    onClicked: {
-                        if (typeof panel.closeCallback === "function")
-                            panel.closeCallback();
-                    }
+                    onClicked: panel.closeHost()
                 }
             }
 
@@ -364,7 +362,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 1
                 color: Theme.outlineVariant
-                opacity: 0.6
+                opacity: 0.5
             }
         }
 
@@ -401,6 +399,7 @@ Item {
                 spacing: Theme.spacingM
 
                 Rectangle {
+                    id: heroCard
                     width: playerColumn.width
                     implicitHeight: heroColumn.implicitHeight + Theme.spacingL * 2
                     height: implicitHeight
@@ -692,6 +691,137 @@ Item {
                                 enabled: panel.controller.ready && panel.controller.volume >= 0
                                 value: isDragging ? value : Math.max(0, panel.controller.volume)
                                 onSliderDragFinished: finalValue => panel.controller.request("volume", finalValue)
+                            }
+                        }
+                    }
+                }
+
+                // Quick Actions Card (Saved Searches / Filters)
+                Rectangle {
+                    width: playerColumn.width
+                    height: quickActionsColumn.implicitHeight + Theme.spacingL * 2
+                    color: Theme.surfaceContainer
+                    radius: Theme.cornerRadiusL
+
+                    ColumnLayout {
+                        id: quickActionsColumn
+                        x: Theme.spacingL
+                        y: Theme.spacingL
+                        width: parent.width - Theme.spacingL * 2
+                        spacing: Theme.spacingS
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXS
+
+                            DankIcon {
+                                name: "bolt"
+                                size: Theme.iconSizeSmall
+                                color: Theme.primary
+                            }
+
+                            StyledText {
+                                Layout.fillWidth: true
+                                text: "Quick Actions"
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Font.Medium
+                                color: Theme.surfaceText
+                            }
+
+                            StyledText {
+                                visible: panel.controller.quickSearches.length > 0
+                                text: "Clears queue & plays match"
+                                font.pixelSize: Math.max(10, Theme.fontSizeSmall - 2)
+                                color: Theme.surfaceVariantText
+                            }
+                        }
+
+                        StyledText {
+                            visible: panel.controller.quickSearches.length === 0
+                            Layout.fillWidth: true
+                            text: "No saved searches yet. Add search strings in plugin settings or click the bookmark button in the Search tab."
+                            color: Theme.surfaceVariantText
+                            font.pixelSize: Theme.fontSizeSmall
+                            wrapMode: Text.Wrap
+                        }
+
+                        Flow {
+                            visible: panel.controller.quickSearches.length > 0
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXS
+
+                            Repeater {
+                                model: panel.controller.quickSearches
+                                delegate: Rectangle {
+                                    id: quickChip
+                                    required property var modelData
+                                    required property int index
+                                    readonly property string chipLabel: (modelData && modelData.name ? String(modelData.name) : String(modelData?.query || "")).trim()
+                                    readonly property string chipQuery: String(modelData?.query || "").trim()
+
+                                    implicitWidth: Math.min(quickActionsColumn.width, chipRow.implicitWidth + Theme.spacingM * 2)
+                                    implicitHeight: Theme.buttonHeightXS
+                                    width: implicitWidth
+                                    height: implicitHeight
+                                    radius: Theme.cornerRadiusFull
+                                    color: chipArea.containsMouse ? Theme.primary : Theme.secondaryContainer
+
+                                    RowLayout {
+                                        id: chipRow
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Theme.spacingM
+                                        anchors.rightMargin: Theme.spacingS
+                                        spacing: 4
+
+                                        DankIcon {
+                                            name: "play_arrow"
+                                            size: 15
+                                            color: chipArea.containsMouse ? Theme.onPrimary : Theme.onSecondaryContainer
+                                        }
+
+                                        StyledText {
+                                            Layout.fillWidth: true
+                                            text: quickChip.chipLabel
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            font.weight: Font.Medium
+                                            color: chipArea.containsMouse ? Theme.onPrimary : Theme.onSecondaryContainer
+                                            elide: Text.ElideRight
+                                            maximumLineCount: 1
+                                        }
+
+                                        MouseArea {
+                                            id: removeChipArea
+                                            Layout.preferredWidth: 18
+                                            Layout.preferredHeight: 18
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: panel.controller.removeQuickSearch(quickChip.index)
+
+                                            DankIcon {
+                                                anchors.centerIn: parent
+                                                name: "close"
+                                                size: 13
+                                                color: chipArea.containsMouse ? Theme.onPrimary : Theme.onSecondaryContainer
+                                                opacity: removeChipArea.containsMouse ? 1.0 : 0.65
+                                            }
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: chipArea
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 24
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        enabled: panel.controller.ready && quickChip.chipQuery.length > 0
+                                        onClicked: panel.controller.request("replace-filter", JSON.stringify({
+                                            query: quickChip.chipQuery
+                                        }))
+                                    }
+                                }
                             }
                         }
                     }
@@ -1115,7 +1245,9 @@ Item {
             controller: panel.controller
         }
 
+        // Bottom Now Playing Micro Info + Prev / Play-Pause / Next
         ColumnLayout {
+            id: bottomNowPlayingBar
             Layout.fillWidth: true
             spacing: 6
 

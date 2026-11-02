@@ -1,6 +1,6 @@
-# MPD Control — Dux Shell 2.0 MVP
+# MPD Control — Dux Shell 2.0
 
-Version 0.1.0. A composite QML plugin with one shared backend, a horizontal/vertical bar widget, a popout, and an optional Control Center tile.
+Version 0.2.0. A composite QML plugin with one shared backend, a horizontal/vertical bar widget, a popout, and an optional Control Center tile.
 
 ## Features
 
@@ -8,7 +8,8 @@ Version 0.1.0. A composite QML plugin with one shared backend, a horizontal/vert
 - Embedded and folder cover art fetched via MPD's `readpicture` and `albumart` commands, cached locally with a fallback icon.
 - Compact bar widget displaying the current song's cover art and an inline Play/Pause button, with `Artist • Album • Title` hover tooltip and mouse-wheel/touchpad volume scrolling.
 - Virtualized **Queue** tab engineered for thousands of entries: server-side windowed loading (`playlistinfo START:END`), progressive infinite scroll (up and down), instant 100-track range paging, jump-to-current-track, server-side search filtering, live drag-and-drop / step / play-next reordering (`moveid`), and optimistic track removal (`deleteid`).
-- **Search & Library** tab with **Grid** and **List** views, global search (`genre:…`, `artist:…`, `album:…`, `year:…` inline tokens + free-text), interactive scope pills (`Albums`, `Tracks`, `Artists`, `Genres`), collapsible **Genre** filter strip, removable filter breadcrumb chips, drill-down navigation, cached album art, and one-click **Play Now**, **Play Next**, and **Add to Queue** actions.
+- **Search & Library** tab with **Grid** and **List** views, global search (`genre:…`, `artist:…`, `album:…`, `year:…` inline tokens + free-text), interactive scope pills (`Albums`, `Tracks`, `Artists`, `Genres`), removable filter breadcrumb chips, drill-down navigation, cached album art, and one-click **Play Now**, **Play Next**, **Add to Queue**, and **Save to Quick Actions** buttons.
+- **Quick Actions** section on the **Track** page for one-click queue replacement (`replace-filter`: clears the queue, adds all matching tracks, and starts playback), configurable via plugin settings or saved directly from the Search tab.
 - Everyday MPRIS-equivalent transport controls: Play/Pause, Stop, Previous, Next, and seek scrubbing with smooth 1-second local elapsed progression while playing and diffed daemon updates.
 - Playback mode controls: Repeat, Random, Single (`Off` / `On` / `Oneshot`), and Consume.
 - Volume slider when MPD's hardware or software mixer is active; explicit indicator when mixer control is disabled.

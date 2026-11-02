@@ -371,6 +371,14 @@ class BackendTests(unittest.TestCase):
         self.assertIn('add "Electronic/Eclipse/02_Feral.flac"', MockMPDHandler.calls)
         self.assertEqual(MockMPDHandler.calls[-1], 'playid 501')
 
+        MockMPDHandler.calls.clear()
+        client.action('replace-filter', 'genre:Electronic album:Eclipse')
+        self.assertEqual(MockMPDHandler.calls[0], 'search Genre "Electronic" Album "Eclipse"')
+        self.assertIn('clear', MockMPDHandler.calls)
+        self.assertIn('addid "Electronic/Eclipse/01_Monolith.flac"', MockMPDHandler.calls)
+        self.assertIn('add "Electronic/Eclipse/02_Feral.flac"', MockMPDHandler.calls)
+        self.assertEqual(MockMPDHandler.calls[-1], 'playid 501')
+
 
 if __name__ == '__main__':
     unittest.main()

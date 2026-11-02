@@ -34,6 +34,56 @@ Item {
 
     readonly property bool hasFacetFilters: filterGenre.length > 0 || filterArtist.length > 0 || filterAlbum.length > 0 || filterYear.length > 0
     readonly property bool hasActiveFilters: hasFacetFilters || searchQuery.length > 0
+    property bool justSavedQuickSearch: false
+
+    function quoteFilterToken(val) {
+        const s = String(val || "").trim();
+        if (s.indexOf(" ") >= 0)
+            return "\"" + s.replace(/\"/g, "\\\"") + "\"";
+        return s;
+    }
+
+    function currentQuickQueryString() {
+        const parts = [];
+        if (filterGenre.length > 0)
+            parts.push("genre:" + quoteFilterToken(filterGenre));
+        if (filterArtist.length > 0)
+            parts.push("artist:" + quoteFilterToken(filterArtist));
+        if (filterAlbum.length > 0)
+            parts.push("album:" + quoteFilterToken(filterAlbum));
+        if (filterYear.length > 0)
+            parts.push("year:" + quoteFilterToken(filterYear));
+        if (searchQuery.length > 0)
+            parts.push(searchQuery);
+        return parts.join(" ").trim();
+    }
+
+    function currentQuickLabel() {
+        const parts = [];
+        if (filterAlbum.length > 0)
+            parts.push(filterAlbum);
+        else if (filterArtist.length > 0)
+            parts.push(filterArtist);
+        if (filterGenre.length > 0)
+            parts.push(filterGenre);
+        if (filterYear.length > 0)
+            parts.push(filterYear);
+        if (searchQuery.length > 0)
+            parts.push(searchQuery);
+        return parts.join(" · ").trim();
+    }
+
+    readonly property bool isCurrentFilterSaved: {
+        const cur = currentQuickQueryString().toLowerCase();
+        if (!cur)
+            return false;
+        const list = controller.quickSearches || [];
+        for (let i = 0; i < list.length; i++) {
+            if (String(list[i].query || "").trim().toLowerCase() === cur)
+                return true;
+        }
+        return false;
+    }
 
     ListModel {
         id: libraryModel
@@ -285,6 +335,13 @@ Item {
         }
     }
 
+    Timer {
+        id: savedFeedbackTimer
+        interval: 1500
+        repeat: false
+        onTriggered: searchView.justSavedQuickSearch = false
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: Theme.spacingS
@@ -339,6 +396,20 @@ Item {
                 tooltipText: "Add all matching tracks to queue"
                 enabled: searchView.controller.ready
                 onClicked: searchView.controller.request("add-filter", searchView.currentFilterSpec())
+            }
+
+            Material.DIconButton {
+                visible: searchView.hasActiveFilters
+                iconName: searchView.isCurrentFilterSaved || searchView.justSavedQuickSearch ? "bookmark_added" : "bookmark_add"
+                variant: searchView.isCurrentFilterSaved || searchView.justSavedQuickSearch ? "filled" : "tonal"
+                tooltipText: searchView.isCurrentFilterSaved ? "Saved to Quick Actions" : "Save filter/search to Quick Actions"
+                enabled: !searchView.isCurrentFilterSaved
+                onClicked: {
+                    if (searchView.controller.saveQuickSearch(searchView.currentQuickLabel(), searchView.currentQuickQueryString())) {
+                        searchView.justSavedQuickSearch = true;
+                        savedFeedbackTimer.restart();
+                    }
+                }
             }
 
             Material.DIconButton {

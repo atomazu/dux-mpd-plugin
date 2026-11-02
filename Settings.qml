@@ -30,4 +30,26 @@ PluginSettings {
         label: "Include artist in inline horizontal bar text"
         defaultValue: true
     }
+    ListSettingWithInput {
+        settingKey: "quickSearches"
+        label: "Quick Action Searches"
+        description: "Define saved search strings (e.g. genre:Electronic, artist:Nujabes, or free text) for one-click queue replacement on the Track tab."
+        defaultValue: []
+        fields: [
+            {
+                id: "name",
+                label: "Label",
+                placeholder: "e.g. Chill Hip Hop",
+                width: 150,
+                required: false
+            },
+            {
+                id: "query",
+                label: "Search / Filter String",
+                placeholder: "e.g. genre:\"Hip Hop\" artist:Nujabes",
+                width: 240,
+                required: true
+            }
+        ]
+    }
 }

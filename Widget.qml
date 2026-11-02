@@ -121,6 +121,7 @@ PluginComponent {
     readonly property string hoverText: Format.hoverText(state)
     readonly property string barText: Format.pillText(state, pluginData.showArtist !== false)
     readonly property int badgeSize: Math.max(18, Math.min(widgetThickness - 4, iconSize + 2))
+    readonly property var quickSearches: Array.isArray(pluginData.quickSearches) ? pluginData.quickSearches : []
 
     property int pendingVolume: -1
     property real scrollAccumulatorY: 0
@@ -164,6 +165,38 @@ PluginComponent {
 
     function requestLibrary(params) {
         request("library", JSON.stringify(params || {}));
+    }
+
+    function saveQuickSearch(label, queryString) {
+        const cleanQuery = String(queryString || "").trim();
+        if (!cleanQuery)
+            return false;
+        const cleanName = String(label || cleanQuery).trim();
+        const existing = Array.isArray(pluginData.quickSearches) ? pluginData.quickSearches.slice() : [];
+        if (existing.some(item => String(item.query || "").trim().toLowerCase() === cleanQuery.toLowerCase()))
+            return false;
+        const updated = existing.concat([
+            {
+                name: cleanName,
+                query: cleanQuery
+            }
+        ]);
+        if (pluginService)
+            pluginService.savePluginData("mpdControl", "quickSearches", updated);
+        else
+            SettingsData.setPluginSetting("mpdControl", "quickSearches", updated);
+        return true;
+    }
+
+    function removeQuickSearch(index) {
+        const existing = Array.isArray(pluginData.quickSearches) ? pluginData.quickSearches.slice() : [];
+        if (index < 0 || index >= existing.length)
+            return;
+        existing.splice(index, 1);
+        if (pluginService)
+            pluginService.savePluginData("mpdControl", "quickSearches", existing);
+        else
+            SettingsData.setPluginSetting("mpdControl", "quickSearches", existing);
     }
 
     function handleWheel(wheelEvent) {

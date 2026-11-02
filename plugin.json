@@ -2,7 +2,7 @@
   "id": "mpdControl",
   "name": "MPD Control",
   "description": "MPD playback status, track metadata, album art, and everyday transport controls",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "atomazu",
   "type": "composite",
   "capabilities": [
