@@ -50,3 +50,11 @@ Run included tests:
 python3 -m unittest discover -s mpd-control/tests -v
 node mpd-control/tests/test_format.cjs
 ```
+
+## TODO / Roadmap
+
+- [ ] **Playlists**: Browse, load, save, and manage stored MPD playlists.
+- [ ] **Dynamic Playlists**: Saved filter/query rules (similar to Quick Actions) that dynamically populate or top up the queue.
+- [ ] **MPD Stickers**: Support song stickers (`sticker`, e.g., ratings, play counts, favorites, or custom tags) and sticker-based filtering.
+- [ ] **Expanded Quick Actions**: Allow Quick Actions to also set playback modes (`consume`, `random`, `repeat`, `single`) or load and play a specific stored playlist.
+
